@@ -1,0 +1,542 @@
+---
+title: "Final Project"
+author: "Yu Kin Li"
+date: "UCSB Fall 2022"
+output: 
+  html_document:
+    code_folding: hide
+
+---
+## Introduction
+The purpose of this project  is to generate a model that will predict NBA players free throw %.
+
+![](/Users/yukinli/Desktop/nbalogo.png)
+
+### Loading Packages
+
+```{r, warning=FALSE,message=FALSE}
+library(corrplot)  # for the correlation plot
+library(discrim)  # for linear discriminant analysis
+library(corrr)   # for calculating correlation
+library(knitr)   # to help with the knitting process
+library(MASS)    # to assist with the markdown processes
+library(tidyverse)   # using tidyverse and tidymodels for this project mostly
+library(tidymodels)
+library(ggplot2)   # for most of our visualizations
+library(ggrepel)
+library(ggimage)
+library(rpart.plot)  # for visualizing trees
+library(vip)         # for variable importance 
+library(vembedr)     # for embedding links
+library(janitor)     # for cleaning out our data
+library(randomForest)   # for building our randomForest
+library(stringr)    # for matching strings
+library("dplyr")     # for basic r functions
+library("yardstick") # for measuring certain metrics
+library(RSQLite)
+library(sqldf)
+library(DBI)
+library(ranger)
+library(kknn)
+tidymodels_prefer(1)
+
+```
+## Background
+In basketball, free throws or foul shots are unopposed attempts to score points by shooting from behind the free-throw line (informally known as the foul line or the charity stripe), a line situated at the end of the restricted area. 
+```{r}
+embed_youtube("iW2VFzBiaQo")
+```
+## How does free throws are awarded?
+There are many situations when free throws are awarded:
+
+1) When a player is fouled while in the act of shooting. If the player misses the shot during the foul, the player receives either two or three free throws depending on whether the shot was taken in front of or behind the three-point line.
+
+2) When the fouling team is in the team bonus (or foul penalty) situation. This happens when, in a single period, a team commits a set number of fouls whether or not in the act of shooting.in the NBA, starting with the fifth foul (fourth in overtime), or the second in the final 2 minutes if the team has less than 5 fouls (4 in OT), the opposing team gets two free throws.
+
+3) If a player, coach, or team staff (e.g., doctor, statistician) shows poor sportsmanship, which may include arguing with a referee, or commits a technical violation (delay of game, excessive time outs, or when a team has no eligible players remaining after a player has fouled out or subsequently the last player to foul out must re-enter the game, the latter two are NBA rules) that person may get charged with a more serious foul called a technical foul. In the NBA, a technical foul results in one free-throw attempt for the other team. At all levels, the opposing team may choose any player who is currently on the court to shoot the free throws and is then awarded possession of the ball after the free throws. Since there is no opportunity for a rebound, these free throws are shot with no players on the lane.
+
+4) if a referee deems a foul extremely aggressive, or that it did not show an attempt to play the ball, the referee can call an even more severe foul, known as a "flagrant foul" in the NBA. This foul is charged against the player (who, depending on the severity of the offense, can even be ejected), and the opponent gets two free throws and possession of the ball afterward. Unlike technical fouls, the player fouled must shoot the awarded free throws. Free throws are normally taken by the fouled player. In the NBA, the opposing team designates the player to shoot, and the injured player cannot return unless the foul committed was a flagrant-2, in which case the player's own team also gets to pick the replacement shooter.
+
+5) when there are only two minutes left on the clock of either half, off-ball fouls (fouls that do not occur on the shooter or near the ball) when the fouling team is over the limit are rewarded with one free throw and possession of the ball.
+
+![Here is the free throw line](/Users/yukinli/Desktop/ftl.png)
+
+## Why do we need to predict player's free throw %?
+According to the above situations, there are two situations in NBA that the team got fouled can choose any player on the court to shoot the free throw(getting a technical foul or a player gets injured from a flagrant-2 foul). Therefore, finding the right player to shoot the free throw is important, it may change the whole game. You do not want to find someone who shoot like the video below.
+```{r}
+embed_youtube("v-gzPWaHglE")
+```
+
+## Loading the Data
+
+I am using the "2022-2023 NBA Player Stats" data set from kaggle.com.
+```{r}
+NBA<-read.csv("/Users/yukinli/Documents/finaldata_nba.csv") 
+head(NBA)
+```
+
+### Explantion of the key data set variables:
+
+Here are the key variables that will be helpful for the report.
+
+* <mark style="background-color: #E8E8E8">Player</mark> : Players
+
+* <mark style="background-color: #E8E8E8">POS</mark> : player's position
+
+* <mark style="background-color: #E8E8E8">MP</mark> : Minutes played per game
+
+* <mark style="background-color: #E8E8E8">X3P. </mark> :3-point field goal percentage
+
+* <mark style="background-color: #E8E8E8">FT</mark> : Free throws per game
+
+* <mark style="background-color: #E8E8E8">FTA</mark> : Free throw attempts per game
+
+* <mark style="background-color: #E8E8E8">FT.</mark> : Free throw percentage
+
+
+
+### How big is this data set that we have to work now?
+
+```{r}
+dim(NBA) # getting the dimensions of our data
+```
+There are 464 observations and 30 variables, this is not a huge dataset. Since this is not a huge data set, we may use all the predictor variables.
+
+### Data Filtering
+``` {r}
+set.seed(1) # set seed
+NBA<- NBA %>% # clean name
+  clean_names()
+NBA <- NBA %>%
+  select(player,pos,age,mp,x3p_2,e_fg,ft,fta,ft_2,pts) %>%
+  # ft_2 is free throw percentage, x3p is 3 points made,x3pa is 3 points attempts, x3p_2 is 3 points %.
+   filter(fta != 0) 
+  # We do not want the players who have not attempted any free throw so we filter out fta = 0
+```
+
+### Date Spliting
+The data was split in a 80% training, 20% testing split. Stratified sampling was used as the <mark style="background-color: #E8E8E8">ft_2</mark> distribution was skewed.
+
+```{r}
+NBA_split <- NBA %>% 
+  initial_split(prop = 0.8, strata = "ft_2")
+NBA_train <- training(NBA_split)
+NBA_test <- testing(NBA_split)
+dim(NBA_train) 
+dim(NBA_test)
+```
+
+The training data set has about 325 observations and the testing data set has just under 82 observations.
+
+### Exploratory Data Analysis
+This entire exploratory data analysis will be based only on the training set, which has 325 observations.
+
+### Players' Position
+I hypothesize that different players' position <mark style="background-color: #E8E8E8">(pos)</mark> will result in different percentage of free throw shooting <mark style="background-color: #E8E8E8">(ft_2)</mark>. Let’s begin by counting how many players in each position.
+
+```{r}
+ggplot(NBA_train, aes(pos)) +
+  geom_bar() +
+  labs(
+    title = "Number of Players of each Position",
+    x = "Players' Position",
+    y = "Count"
+  ) +
+  # We want to be able to read labels better
+  coord_flip()
+```
+We can see there are more SG and PF compare to SF, PG and C in the NBA in 2022-2023 season.
+
+###Free Throw %
+You may wonder how do they collect the data of free throw %. The answer is easy. They just record the free throw attempts per game and free throw made per game and find the average of these two variables. Then, the formula of free throw % is the average of free throw made per game and the average of the free throw attempts per game(ft/ftm).
+
+```{r}
+ggplot(NBA_train, aes(ft_2)) +
+  geom_histogram(bins = 70, color = "white") +
+  labs(
+    title = "Histogram of Free Throws %"
+  )
+```
+
+Looking at all players, there’s leftward skew. Let’s break this down further by type of position.
+
+```{r}
+ggplot(NBA_train, aes(ft_2)) +
+  geom_histogram(bins = 30, color = "white") +
+  facet_wrap(~pos, scales = "free_y") +
+  labs(
+    title = "Histogram of Free Throws % by Players' Position"
+  )
+ggplot(NBA_train, aes(reorder(pos, ft_2), ft_2)) +
+  geom_boxplot(varwidth = TRUE) + 
+  coord_flip() +
+  labs(
+    title = " Free Throw % by Players' Position",
+    x = "Players' Position"
+  )
+```
+From the plot, we can see that SG has the highest free throw %, and then SF, PG, PF, and C has the lowest free throw %
+
+
+
+Now let's check what extent the <mark style="background-color: #E8E8E8">fta</mark> impacts the <mark style="background-color: #E8E8E8">ft_2</mark>.
+
+```{r}
+ NBA_train %>% 
+  ggplot(aes(fta, ft_2)) +
+  geom_point(alpha = 0.1) +
+  stat_summary(fun.y=mean, colour="red", geom="line", size = 3)+
+  facet_wrap(~pos, scales = "free") +
+  labs(
+   title = "Free Throw Attempts vs. Free Throw % by Players' Postion"
+  )
+```  
+  
+The relationships in the plot are not so clear.
+```{r} 
+NBA_train %>% 
+  ggplot(aes(ft, ft_2)) +
+  geom_point(alpha = 0.1) +
+  stat_summary(fun.y=mean, colour="red", geom="line", size = 3)+
+  facet_wrap(~pos, scales = "free") +
+  labs(
+    title = "Free Throw Made vs. Free Throw % by Players' Postion"
+  )
+```
+The relationships presented in this plot are more clear than the previous plot of free throw % and free throw attempts.We’ll want to keep this in mind for our model.
+
+### Minutes played per game play
+We should understand that the average of minutes played per game play a quite important role to predict the free throw %. The shorter you play the game, the fewer free throw you will attempt. The longer you play the game, the more free throw you will attempt. At the same time the players who play will have less energy to shoot the free throw.
+
+```{r}
+NBA_train %>% 
+  group_by(pos, mp) %>% 
+  summarize(
+    mean_ft_2 = mean(ft_2)
+  ) %>% 
+  ggplot(aes(mp, mean_ft_2)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~pos) +
+  labs(
+    title = "Average Free Throw of Minutes Played per game by Players' Position",
+    y = "Mean Free Throw %"
+  )
+```
+
+Seems like minutes played per game does not influence Free Throw % a lot this year.
+
+### 3 points
+
+![](/Users/yukinli/Desktop/3pl.png)
+As you see, NBA has the farthest 3 points line compare to college men, high school and current college women. Also, it is a lot farther than free throw line which means 3 points should be harder free throw. Therefore I hypothesize the higher 3 points %, the higher free throw %.
+
+```{r}
+NBA_train %>% 
+  ggplot(aes(ft_2, x3p_2)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(se = FALSE, color = "red", size = 3) +
+  facet_wrap(~pos, scales = "free_y") +
+  labs(
+    title = "Freee Throw % vs 3 Points % by Posotion"
+  )
+```
+There seems to be a positive relationship between <mark style="background-color: #E8E8E8">ft_2</mark> and <mark style="background-color: #E8E8E8">x3p_2</mark>! We’ll keep this in mind for our model.
+
+## Model Building
+
+I will build my model in three steps:
+
+*Building the model
+
+*Running the model
+
+*Analyzing the model
+
+1. read the data and filter the data
+```{r}
+set.seed(1) # set seed
+NBA<- NBA %>% # clean name
+  clean_names()
+NBA <- NBA %>%
+  select(pos,mp,x3p_2,ft,fta,ft_2) %>%
+   filter(fta != 0) 
+```
+
+2. Split the data and get train and test data
+```{r}
+NBA_split <- NBA %>% 
+  initial_split(prop = 0.8, strata = "ft_2")
+NBA_train <- training(NBA_split)
+NBA_test <- testing(NBA_split)
+```
+
+3. Fold the training data into 10 folds with 5 repeats.
+```{r}
+NBA_folds <- vfold_cv(NBA_train, v = 5, strata = ft_2)
+```
+
+4. Create a recipe, which is detailed in comments below.
+```{r}
+NBA_recipe <- recipe (
+ft_2 ~  pos + mp + x3p_2 + ft + fta , data = NBA_train) %>%
+step_dummy(all_nominal_predictors()) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+```
+
+### Preparing & Running The Models for Repeated Cross Validation
+
+I decided to use these three models:
+
+*Random Forest
+
+*Boosted Trees
+
+*Nearest Neighbors
+
+### Random Forest Model
+Let's start with Random Forest Model first.
+
+1.create <mark style="background-color: #E8E8E8">rt_model</mark>
+```{r}
+rf_model <- 
+  rand_forest(
+              min_n = tune(),
+              mtry = tune()) %>%
+              set_mode ("regression") %>% 
+  set_engine("ranger")
+```
+
+2.create <mark style="background-color: #E8E8E8">rf_workflow</mark>
+```{r}
+rf_workflow <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(NBA_recipe)
+```
+
+3.create <mark style="background-color: #E8E8E8">rf_params</mark>
+```{r}
+rf_params <- hardhat::extract_parameter_set_dials(rf_model) %>% 
+  update(mtry = mtry(range= c(2, 5)))
+```
+
+4.create <mark style="background-color: #E8E8E8">rf_grid</mark>
+```{r}
+rf_grid <- grid_regular(rf_params, levels = 2)
+```
+
+5.create <mark style="background-color: #E8E8E8">re_tune</mark>
+```{r}
+rf_tune <- rf_workflow %>% 
+  tune_grid(
+    resamples = NBA_folds ,
+    grid = rf_grid)
+```
+
+### Boosted Trees
+
+Next, let's build a Boosted Trees Model:
+
+1.create <mark style="background-color: #E8E8E8">bt_model</mark>
+```{r}
+bt_model <- boost_tree(
+                       min_n = tune(),
+                       mtry = tune(),
+                       learn_rate = tune()) %>% 
+  set_mode ( "regression")%>%
+  set_engine("xgboost")
+```
+
+2.create <mark style="background-color: #E8E8E8">bt_workflow</mark>
+```{r}
+bt_workflow <- workflow() %>% 
+  add_model(bt_model) %>% 
+  add_recipe(NBA_recipe)
+```
+
+3.create <mark style="background-color: #E8E8E8">bt_params</mark>
+```{r}
+bt_params <- hardhat::extract_parameter_set_dials(bt_model) %>% 
+  update(mtry = mtry(range= c(2, 5)),
+         learn_rate = learn_rate(range = c(-5, 0.2))
+  )
+```
+
+4.create <mark style="background-color: #E8E8E8">bt_grid</mark>
+```{r}
+bt_grid <- grid_regular(bt_params, levels = 2)
+```
+
+5.create <mark style="background-color: #E8E8E8">bt_tune</mark>
+```{r}
+bt_tune <- bt_workflow %>% 
+  tune_grid(
+    resamples = NBA_folds, 
+    grid = bt_grid
+    )
+```
+
+
+### Nearest Neighbors
+
+Lastly, let's build a Nearest Neighbors Model:
+
+1.create <mark style="background-color: #E8E8E8">nn_model</mark>
+```{r}
+nn_model <- 
+  nearest_neighbor(
+    neighbors = tune())%>%
+  set_mode ("regression") %>% 
+  set_engine("kknn")
+```
+
+2.create <mark style="background-color: #E8E8E8">nn_workflow</mark>
+```{r}
+nn_workflow <- workflow() %>% 
+  add_model(nn_model) %>% 
+  add_recipe(NBA_recipe)
+```
+
+3.create <mark style="background-color: #E8E8E8">nn_params</mark>
+```{r}
+nn_params <-hardhat::extract_parameter_set_dials(nn_model)
+```
+
+4.create <mark style="background-color: #E8E8E8">nn_grid</mark>
+```{r}
+nn_grid <- grid_regular(nn_params, levels = 2)
+```
+
+5.create <mark style="background-color: #E8E8E8">nn_tune</mark>
+```{r}
+nn_tune <- nn_workflow %>% 
+  tune_grid(
+    resamples = NBA_folds, 
+            grid = nn_grid)
+```
+
+
+
+### Random Forest Model
+
+```{r}
+autoplot(rf_tune, metric = "rmse")
+```
+```{r}
+show_best(rf_tune, metric = "rmse") %>% select(-.estimator, -.config)
+```
+Using the show_best() function, the smallest mean is 0.1124497, with mtry = 5 and min_n = 2. 
+
+
+###Boosted Tree Model
+
+```{r}
+autoplot(bt_tune, metric = "rmse")
+```
+```{r}
+show_best(bt_tune, metric = "rmse") %>% select(-.estimator, -.config)
+```
+
+
+Using the show_best() function, the smallest mean is 0.000010, with learn_rate = 1.584893, mtry = 5 and min_n = 2. This mean is like 0.1 smaller than our random forest model.
+
+###Nearest Neighbor Model
+```{r}
+autoplot(nn_tune, metric = "rmse")
+```
+
+```{r}
+show_best(nn_tune, metric = "rmse") %>% select(-.estimator, -.config)
+```
+Using the show_best() function, the smallest mean is 0.1779012, with neighbors = 15. This does not beat our boosted tree model.
+
+Therefore, let's  continue with theboosted tree model being the model that performed best.
+
+
+### Final Model Building
+create <mark style="background-color: #E8E8E8">bt_workflow_tuned</mark>
+```{r}
+bt_workflow_tuned <- bt_workflow %>% 
+  finalize_workflow(select_best(bt_tune, metric = "rmse"))
+```
+create <mark style="background-color: #E8E8E8">bt_results /mark>
+```{r}
+bt_results <- fit(bt_workflow_tuned, NBA_train)
+```
+
+
+### Analysis of The Test Set
+
+fit the model
+```{r}
+NBA_metric <- metric_set(rmse)
+
+model_test_predictions <- predict(bt_results, new_data = NBA_test) %>% 
+  bind_cols(NBA_test %>% select(ft_2)) 
+
+model_test_predictions_type <- predict(bt_results, new_data = NBA_test) %>% 
+  bind_cols(NBA_test %>% select(ft_2, pos)) 
+
+model_test_predictions %>% 
+  NBA_metric(truth = ft_2, estimate = .pred)
+```
+
+Our model returned an rmse of 0.1739246	 on our testing data, which is not the same rmse on the training data. This means my model did not a great job.
+
+### Example
+
+let's do some examples
+ex1:
+```{r}
+ft_ex1<- data.frame(
+  pos = 'C',
+  mp = 40,
+  x3p_2 = 0.4,
+  ft = 2,
+  fta =20
+)
+
+predict(bt_results, ft_ex1)
+```
+The prediction of free throw % is 76.73%
+
+ex2:
+```{r}
+ft_ex2<- data.frame(
+  pos = 'PG',
+  mp = 30,
+  x3p_2 = 0.8,
+  ft = 8,
+  fta =20
+)
+
+predict(bt_results, ft_ex2)
+```
+
+The prediction of free throw % is 76.73%.
+
+last ex:
+```{r}
+ft_ex3<- data.frame(
+  pos = 'C',
+  mp = 30,
+  x3p_2 = 0.9,
+  ft = 1,
+  fta =20
+)
+
+predict(bt_results, ft_ex3)
+```
+
+The prediction of free throw % is 63.24%.
+
+
+### Conculusion
+I tried to do research, testing, and analysis, the best model to predict the free throw %, but it was not good enough.
+
+I definitely made mistake in my project, but sometimes is hard to find out, Also, I think I can use other modeling like Naive Bayes or Support Vector Machines which may give me a better results compare to Boosted Trees model. I think next time I should find a bigger data set, for example, I can find 2000-2023 NBA season instead of just 2022-2023 NBA season, so I think will have a more accurate data set and more predictors.
+
+Lastly, this Free Throw % Model project provided a great opportunity for me to build my experience and skills with machine learning techniques, as an NBA fan, I will definitely build a model to predict the champion in the future.
+
+![](/Users/yukinli/Desktop/NBAchamp.png)
